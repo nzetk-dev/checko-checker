@@ -5,7 +5,7 @@ import time
 import sqlite3
 import csv
 import hashlib
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
@@ -35,8 +35,152 @@ HISTORY_DB = "history.db"
 KEY_FILE = "secret.key"
 LAST_COMPANY_RESPONSE = "last_company_response.json"
 LAST_SEARCH_RESPONSE = "last_search_response.json"
-SHOW_ZERO_FINANCES = False  # True - показывать все строки финансовой отчётности, включая нули
 
+# Расшифровка кодов строк бухгалтерской отчётности (Ф1 — Баланс, Ф2 — ОФР)
+FIN_CODE_NAMES = {
+    "1100": "Итого внеоборотных активов",
+    "1110": "Нематериальные поисковые активы",
+    "1120": "Результаты исследований и разработок",
+    "1130": "Нематериальные активы",
+    "1140": "Основные средства",
+    "1150": "Доходные вложения в материальные ценности",
+    "1160": "Отложенные налоговые активы",
+    "1170": "Прочие внеоборотные активы",
+    "1180": "Финансовые вложения (неликвидные)",
+    "1190": "Прочие внеоборотные активы",
+    "1200": "Итого оборотных активов",
+    "1210": "Запасы",
+    "1220": "НДС по приобретённым ценностям",
+    "1230": "Дебиторская задолженность",
+    "1240": "Финансовые вложения (ликвидные)",
+    "1250": "Денежные средства и денежные эквиваленты",
+    "1260": "Прочие оборотные активы",
+    "1300": "Итого капитал",
+    "1310": "Уставный капитал (складочный капитал, уставный фонд)",
+    "1320": "Собственные акции, выкупленные у акционеров",
+    "1340": "Переоценка внеоборотных активов",
+    "1350": "Добавочный капитал (без переоценки)",
+    "1360": "Резервный капитал",
+    "1370": "Нераспределённая прибыль (непокрытый убыток)",
+    "1400": "Итого долгосрочных обязательств",
+    "1410": "Заемные средства (долгосрочные)",
+    "1420": "Отложенные налоговые обязательства",
+    "1430": "Оценочные обязательства (долгосрочные)",
+    "1450": "Прочие долгосрочные обязательства",
+    "1500": "Итого краткосрочных обязательств",
+    "1510": "Заемные средства (краткосрочные)",
+    "1520": "Кредиторская задолженность",
+    "1530": "Доходы будущих периодов",
+    "1540": "Оценочные обязательства (краткосрочные)",
+    "1550": "Прочие краткосрочные обязательства",
+    "1600": "Баланс (актив)",
+    "1700": "Баланс (пассив)",
+    "2100": "Валовая прибыль (убыток)",
+    "2110": "Выручка",
+    "2120": "Себестоимость продаж",
+    "2200": "Прибыль (убыток) от продаж",
+    "2210": "Коммерческие расходы",
+    "2220": "Управленческие расходы",
+    "2300": "Прибыль (убыток) до налогообложения",
+    "2310": "Доходы от участия в других организациях",
+    "2320": "Проценты к получению",
+    "2330": "Проценты к уплате",
+    "2340": "Прочие доходы",
+    "2350": "Прочие расходы",
+    "2400": "Чистая прибыль (убыток)",
+    "2410": "Совокупный финансовый результат",
+    "2421": "Результат от переоценки внеоборотных активов",
+    "2430": "Результат от прочих операций",
+    "2450": "Изменение добавочного капитала",
+    "2460": "Изменение резервного капитала",
+    "2500": "Совокупный финансовый результат периода",
+    "2510": "Результат от переоценки внеоборотных активов, не включаемый в чистую прибыль",
+    "2520": "Результат от прочих операций, не включаемый в чистую прибыль",
+    "3200": "Величина капитала на 31 декабря года, предшествовавшего отчётному",
+    "3300": "Величина капитала на 31 декабря отчётного года",
+    "3310": "Поступления — всего",
+    "3311": "В результате выпуска акций",
+    "3312": "В результате увеличения номинальной стоимости акций",
+    "3313": "В результате реорганизации",
+    "3314": "Изменения добавочного капитала",
+    "3315": "Изменения резервного капитала",
+    "3316": "Изменения нераспределённой прибыли (непокрытого убытка)",
+    "3320": "Изъятия — всего",
+    "3321": "В результате уменьшения номинальной стоимости акций",
+    "3322": "В результате уменьшения числа акций",
+    "3323": "В результате реорганизации",
+    "3324": "Изменения добавочного капитала",
+    "3325": "Изменения резервного капитала",
+    "3326": "Изменения нераспределённой прибыли (непокрытого убытка)",
+    "3600": "Чистые активы",
+    "4100": "Чистые финансовые вложения (за исключением денежных эквивалентов)",
+    "4110": "Поступления — всего",
+    "4111": "От продажи акций других организаций",
+    "4112": "От возврата займов, процентов по займам",
+    "4113": "Иные платежи",
+    "4119": "Иные платежи",
+    "4120": "Платежи — всего",
+    "4121": "В связи с приобретением акций, долей",
+    "4122": "В связи с предоставлением займов",
+    "4123": "Иные платежи",
+    "4124": "Иные платежи",
+    "4129": "Иные платежи",
+    "4200": "Денежные потоки от текущих операций",
+    "4210": "Поступления — всего",
+    "4211": "От продажи продукции, товаров, работ, услуг",
+    "4212": "Арендные платежи, лицензионные платежи, роялти",
+    "4213": "От перепродажи финансовых активов",
+    "4214": "От процентов на остатки денежных средств",
+    "4219": "Прочие поступления",
+    "4220": "Платежи — всего",
+    "4221": "Поставщикам (подрядчикам)",
+    "4222": "Работникам",
+    "4223": "Проценты по долговым обязательствам",
+    "4224": "Налоги на прибыль",
+    "4229": "Прочие платежи",
+    "4300": "Денежные потоки от финансовых операций",
+    "4310": "Поступления — всего",
+    "4311": "От выпуска акций, долей",
+    "4312": "От выпуска облигаций, векселей и т.д.",
+    "4313": "От предоставления займов третьими лицами",
+    "4314": "Прочие поступления",
+    "4320": "Платежи — всего",
+    "4321": "В связи с погашением (выкупом) акций, долей",
+    "4322": "В связи с погашением облигаций, векселей",
+    "4323": "В связи с погашением займов и кредитов",
+    "4324": "В связи с уплатой дивидендов, процентов",
+    "4329": "Прочие платежи",
+    "4400": "Величина изменения денежных средств и денежных эквивалентов",
+    "4450": "Денежные средства и денежные эквиваленты на начало отчётного периода",
+    "4490": "Денежные средства и денежные эквиваленты на конец отчётного периода",
+    "4500": "Денежные эквиваленты на конец отчётного периода",
+    "6100": "Разница между величиной чистых активов и уставным капиталом на конец года",
+    "6200": "Разница между величиной чистых активов и уставным капиталом на начало года",
+    "6210": "Принятая учётная политика (чистые активы меньше УК)",
+    "6215": "Решение об уменьшении УК",
+    "6220": "Увеличение УК",
+    "6230": "Уменьшение УК",
+    "6240": "Вклад в имущество общества",
+    "6250": "Прочие изменения",
+    "6300": "Покрытие за счёт имущества",
+    "6310": "Изменение добавочного капитала",
+    "6311": "Результат переоценки",
+    "6312": "Прочее",
+    "6313": "Прочее",
+    "6320": "Изменение резервного капитала",
+    "6321": "Отчисления",
+    "6322": "Использование",
+    "6323": "Прочее",
+    "6324": "Прочее",
+    "6325": "Прочее",
+    "6326": "Прочее",
+    "6330": "Изменение нераспределённой прибыли",
+    "6350": "Изменение собственных акций",
+    "6400": "Прочие изменения",
+}
+
+
+# ==================== ЛОГИРОВАНИЕ ====================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -50,8 +194,6 @@ logger = logging.getLogger(__name__)
 
 # ==================== ШИФРОВАНИЕ ====================
 class KeyManager:
-    """Управление шифрованием API-ключа"""
-
     def __init__(self):
         self.key_file = Path(KEY_FILE)
         self.key = None
@@ -80,8 +222,6 @@ class KeyManager:
 
 # ==================== КЭШ ====================
 class CacheManager:
-    """Кэширование запросов для экономии лимитов"""
-
     def __init__(self):
         self.conn = sqlite3.connect(CACHE_DB)
         self._create_table()
@@ -100,7 +240,6 @@ class CacheManager:
 
     @staticmethod
     def _get_hash(endpoint: str, params: Dict) -> str:
-        # API-ключ намеренно исключён из хэша
         clean = {k: v for k, v in params.items() if k != 'key'}
         request_str = f"{endpoint}:{str(sorted(clean.items()))}"
         return hashlib.md5(request_str.encode()).hexdigest()
@@ -135,8 +274,6 @@ class CacheManager:
 
 # ==================== ИСТОРИЯ ====================
 class HistoryManager:
-    """Хранение истории проверок"""
-
     def __init__(self):
         self.conn = sqlite3.connect(HISTORY_DB)
         self._create_table()
@@ -186,8 +323,6 @@ class HistoryManager:
 
 # ==================== ЭКСПОРТ ====================
 class ExportManager:
-    """Экспорт данных в CSV и Excel"""
-
     @staticmethod
     def to_csv(data: List[Dict], filename: str = "export.csv"):
         if not data:
@@ -199,7 +334,7 @@ class ExportManager:
             writer.writeheader()
             writer.writerows(data)
         logger.info(f"Данные экспортированы в {filename}")
-        print(f"Данные экспортированы в {filename}")
+        print(f"✓ Данные экспортированы в {filename}")
 
     @staticmethod
     def to_excel(data: List[Dict], filename: str = "export.xlsx"):
@@ -233,10 +368,10 @@ class ExportManager:
             ])
         for column in ws.columns:
             max_length = max((len(str(cell.value)) for cell in column if cell.value is not None), default=0)
-            ws.column_dimensions[column[0].column_letter].width = min(max_length + 2, 50)
+            ws.column_dimensions[column[0].column_letter].width = min(max_length + 2, 60)
         wb.save(filename)
         logger.info(f"Данные экспортированы в {filename}")
-        print(f"Данные экспортированы в {filename}")
+        print(f"✓ Данные экспортированы в {filename}")
 
 
 # ==================== МОДЕЛЬ ДАННЫХ ====================
@@ -257,8 +392,6 @@ class CompanyData:
 
 # ==================== API ====================
 class CheckoAPI:
-    """Класс для работы с API Checko.ru"""
-
     BASE_URL = "https://api.checko.ru/v2"
 
     def __init__(self, api_key: str, cache: CacheManager):
@@ -266,11 +399,10 @@ class CheckoAPI:
         self.cache = cache
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'CheckoChecker/2.1',
+            'User-Agent': 'CheckoChecker/2.2',
             'Accept': 'application/json'
         })
 
-    # ---------- служебные ----------
     @staticmethod
     def _dump_raw(response: Any, filename: str):
         try:
@@ -278,25 +410,6 @@ class CheckoAPI:
                 json.dump(response, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.debug(f"Не удалось сохранить сырой ответ: {e}")
-
-    @staticmethod
-    def _deep_find(data: Any, key: str, _depth: int = 0) -> Any:
-        """Рекурсивный поиск первого вхождения ключа в dict/list любой вложенности"""
-        if _depth > 5 or data is None:
-            return None
-        if isinstance(data, dict):
-            if key in data and data[key] not in (None, '', [], {}):
-                return data[key]
-            for v in data.values():
-                found = CheckoAPI._deep_find(v, key, _depth + 1)
-                if found is not None:
-                    return found
-        elif isinstance(data, list):
-            for v in data:
-                found = CheckoAPI._deep_find(v, key, _depth + 1)
-                if found is not None:
-                    return found
-        return None
 
     def _make_request(self, endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
         cached = self.cache.get(endpoint, params)
@@ -309,22 +422,17 @@ class CheckoAPI:
 
         try:
             response = self.session.get(url, params=full_params, timeout=30)
-
             if response.status_code == 429:
                 logger.warning("Превышен лимит запросов. Ожидание 1 секунды...")
                 time.sleep(1)
                 return self._make_request(endpoint, params)
-
             response.raise_for_status()
             data = response.json()
-
             if isinstance(data, dict) and 'error' in data:
                 logger.error(f"Ошибка API: {data['error']}")
                 raise Exception(f"Ошибка API: {data['error']}")
-
             self.cache.set(endpoint, params, data)
             return data
-
         except requests.exceptions.Timeout:
             logger.error("Превышено время ожидания запроса")
             raise
@@ -335,68 +443,87 @@ class CheckoAPI:
             logger.error(f"Ошибка запроса: {e}")
             raise
 
-    # ---------- парсинг карточки компании ----------
     def _parse_company(self, data: Dict[str, Any]) -> CompanyData:
-        containers = [data]
-        for key in ('org', 'company', 'organization', 'ul', 'info', 'legal', 'requisites', 'data'):
-            if isinstance(data.get(key), dict):
-                containers.append(data[key])
-
-        def pick(*names):
-            for c in containers:
-                for n in names:
-                    v = c.get(n)
-                    if v not in (None, '', [], {}):
-                        return v
-            for n in names:
-                v = self._deep_find(data, n)
+        """Парсинг ответа с русскоязычными ключами (схема ofdata/Checko v2)"""
+        # Защитные геттеры
+        def g(d, *keys, default=''):
+            if not isinstance(d, dict):
+                return default
+            for k in keys:
+                v = d.get(k)
                 if v not in (None, '', [], {}):
                     return v
-            return ''
+            return default
 
-        inn = str(pick('inn'))
-        ogrn = str(pick('ogrn'))
-        kpp = str(pick('kpp'))
-        name = str(pick('name', 'name_full', 'fullname', 'full_name', 'title', 'short_name'))
-        status = str(pick('status', 'state', 'activity', 'state_status'))
-        reg_date = str(pick('reg_date', 'registration_date', 'ogrn_date', 'date_registration', 'created'))
+        inn = str(g(data, 'ИНН', 'inn'))
+        ogrn = str(g(data, 'ОГРН', 'ogrn'))
+        kpp = str(g(data, 'КПП', 'kpp'))
+        name = str(g(data, 'НаимПолн', 'НаимСокр', 'НаимАнгл', 'name', 'name_full'))
 
-        addr_raw = pick('address', 'address_full', 'addr')
+        status_raw = g(data, 'Статус', 'status')
+        if isinstance(status_raw, dict):
+            status = str(status_raw.get('Наим') or status_raw.get('name') or '')
+        else:
+            status = str(status_raw)
+
+        reg_date = str(g(data, 'ДатаРег', 'ДатаОГРН', 'reg_date', 'registration_date'))
+
+        # Юридический адрес
+        addr_raw = g(data, 'ЮрАдрес', 'address')
         if isinstance(addr_raw, dict):
-            address = str(addr_raw.get('value') or addr_raw.get('text') or addr_raw.get('address') or '')
+            address = str(
+                addr_raw.get('АдресРФ')
+                or addr_raw.get('Адрес')
+                or addr_raw.get('value')
+                or addr_raw.get('text')
+                or ''
+            )
         else:
             address = str(addr_raw)
 
-        mgr_raw = pick('manager', 'director', 'head', 'ceo', 'manager_name')
-        if isinstance(mgr_raw, dict):
-            director = str(mgr_raw.get('name') or mgr_raw.get('fio') or '')
-        elif isinstance(mgr_raw, list) and mgr_raw:
+        # Руководитель (может быть список)
+        mgr_raw = g(data, 'Руковод', 'manager', 'director', 'head')
+        if isinstance(mgr_raw, list) and mgr_raw:
             first = mgr_raw[0]
-            director = str(first.get('name') or first.get('fio')) if isinstance(first, dict) else str(first)
+            if isinstance(first, dict):
+                director = str(first.get('ФИО') or first.get('name') or first.get('fio') or '')
+            else:
+                director = str(first)
+        elif isinstance(mgr_raw, dict):
+            director = str(mgr_raw.get('ФИО') or mgr_raw.get('name') or mgr_raw.get('fio') or '')
         else:
             director = str(mgr_raw)
 
-        okved_raw = pick('okved', 'okveds', 'activities')
+        # ОКВЭД: основной + дополнительные
         okved_list: List[str] = []
-        if isinstance(okved_raw, list):
-            for item in okved_raw:
+        main_okved = g(data, 'ОКВЭД', 'okved')
+        if isinstance(main_okved, dict):
+            code = main_okved.get('Код') or main_okved.get('code') or ''
+            nm = main_okved.get('Наим') or main_okved.get('name') or main_okved.get('title') or ''
+            if code or nm:
+                okved_list.append(f"{code} {nm}".strip())
+        extra = g(data, 'ОКВЭДДоп', 'okved_extra')
+        if isinstance(extra, list):
+            for item in extra:
                 if isinstance(item, dict):
-                    code = item.get('code') or item.get('okved') or ''
-                    nm = item.get('name') or item.get('title') or item.get('text') or ''
-                    okved_list.append(f"{code} {nm}".strip())
+                    code = item.get('Код') or item.get('code') or ''
+                    nm = item.get('Наим') or item.get('name') or item.get('title') or ''
+                    if code or nm:
+                        okved_list.append(f"{code} {nm}".strip())
                 elif isinstance(item, str):
                     okved_list.append(item)
-        elif isinstance(okved_raw, dict):
-            okved_list.append(f"{okved_raw.get('code', '')} {okved_raw.get('name', '')}".strip())
 
-        contacts_raw = pick('contacts', 'phones', 'emails')
-        contacts = contacts_raw if isinstance(contacts_raw, dict) else {}
-
-        if not inn and not name:
-            logger.warning(
-                "Не удалось извлечь базовые поля. Сырой ответ сохранён в "
-                f"{LAST_COMPANY_RESPONSE} - пришлите этот файл для точной настройки парсинга."
-            )
+        # Контакты
+        contacts_raw = g(data, 'Контакты', 'contacts')
+        contacts: Dict[str, Any] = {}
+        if isinstance(contacts_raw, dict):
+            for key, label in [('Тел', 'Телефоны'), ('Емэйл', 'Email'), ('ВебСайт', 'Веб-сайт')]:
+                val = contacts_raw.get(key)
+                if val:
+                    if isinstance(val, list):
+                        contacts[label] = ', '.join(str(x) for x in val if x)
+                    else:
+                        contacts[label] = str(val)
 
         return CompanyData(
             inn=inn, ogrn=ogrn, name=name, kpp=kpp, address=address,
@@ -404,23 +531,28 @@ class CheckoAPI:
             status=status, contacts=contacts
         )
 
-    # ---------- публичные методы ----------
     def get_company(self, inn: str) -> Optional[CompanyData]:
         logger.info(f"Запрос данных компании с ИНН: {inn}")
         try:
-            company_data = self._make_request('company', {'inn': inn})
-            self._dump_raw(company_data, LAST_COMPANY_RESPONSE)
+            response = self._make_request('company', {'inn': inn})
+            self._dump_raw(response, LAST_COMPANY_RESPONSE)
 
-            if not isinstance(company_data, dict) or 'data' not in company_data:
+            if not isinstance(response, dict) or 'data' not in response:
                 logger.warning(f"Компания с ИНН {inn} не найдена")
                 return None
 
-            company = self._parse_company(company_data['data'])
+            data = response['data']
+            if not isinstance(data, dict):
+                logger.warning(f"Ожидался словарь в data для ИНН {inn}")
+                return None
 
+            company = self._parse_company(data)
+
+            # Получение финансовой отчётности
             try:
-                finances_data = self._make_request('finances', {'inn': inn})
-                if isinstance(finances_data, dict) and 'data' in finances_data:
-                    company.finances = finances_data['data']
+                fin_response = self._make_request('finances', {'inn': inn})
+                if isinstance(fin_response, dict) and 'data' in fin_response:
+                    company.finances = fin_response['data']
             except Exception as e:
                 logger.warning(f"Не удалось получить финансовые данные: {e}")
 
@@ -448,7 +580,7 @@ class CheckoAPI:
                 value = data.get(key)
                 if isinstance(value, list):
                     return value
-            if data.get('inn'):
+            if data.get('inn') or data.get('ИНН'):
                 return [data]
             return []
         return []
@@ -501,6 +633,20 @@ class CheckoChecker:
 
         self.api = CheckoAPI(api_key, self.cache)
 
+    def format_finance(self, block: Dict[str, Any], show_zero: bool = False) -> List[Tuple[str, str, Any]]:
+        """Возвращает список кортежей (код, расшифровка, значение) без нулей"""
+        out = []
+        for code, value in block.items():
+            code_str = str(code)
+            if not show_zero and value in (0, '0', None, ''):
+                continue
+            label = FIN_CODE_NAMES.get(code_str, "")
+            if label:
+                out.append((code_str, label, value))
+            else:
+                out.append((code_str, f"Строка {code_str}", value))
+        return out
+
     def print_company_info(self, company: CompanyData):
         print("\n" + "=" * 80)
         print(f"ИНН: {company.inn}")
@@ -526,35 +672,54 @@ class CheckoChecker:
                     print(f"  {key}: {value}")
 
         if company.finances:
-            print("\nФинансовая отчётность (тыс. руб., ненулевые показатели):"
-                  if not SHOW_ZERO_FINANCES else "\nФинансовая отчётность:")
+            print("\nФинансовая отчётность:")
             for year in sorted(company.finances, key=str):
                 block = company.finances[year]
                 if not isinstance(block, dict):
                     continue
-                items = block if SHOW_ZERO_FINANCES else {k: v for k, v in block.items() if v not in (0, '0', None)}
+                items = self.format_finance(block, show_zero=False)
                 if not items:
                     continue
-                print(f"  {year}:")
-                for k, v in items.items():
-                    print(f"    {k}: {v}")
+                print(f"\n  Год {year}:")
+                # Сортируем по коду, чтобы было логично
+                for code, label, value in sorted(items, key=lambda x: x[0]):
+                    try:
+                        value_fmt = f"{int(value):,}".replace(',', ' ')
+                    except (ValueError, TypeError):
+                        value_fmt = str(value)
+                    print(f"    {code} {label}: {value_fmt} тыс. руб.")
         print("=" * 80 + "\n")
 
-    def single_check(self):
+    def single_check(self, inn: Optional[str] = None):
+        """Одиночная проверка. Если inn=None — запрашивается у пользователя."""
         while True:
-            inn = input("\nВведите ИНН (10 цифр) или 'q' для выхода: ").strip()
-            if inn.lower() == 'q':
+            if inn is None:
+                raw = input("\nВведите ИНН (10 цифр) или 'q' для выхода: ").strip()
+            else:
+                raw = inn
+                inn = None  # для следующих итераций запрашиваем у пользователя
+
+            if raw.lower() == 'q':
                 break
-            if not self.api.validate_inn(inn):
+            if not self.api.validate_inn(raw):
                 logger.error("Некорректный ИНН. Должно быть 10 цифр.")
                 continue
-            company = self.api.get_company(inn)
+
+            company = self.api.get_company(raw)
             if company:
-                self.print_company_info(company)
-                self.history.add_record(asdict(company))
-                logger.info("Результат сохранён в историю")
+                # Сохраняем в историю только если есть хоть какие-то данные
+                if company.inn or company.name:
+                    self.print_company_info(company)
+                    self.history.add_record(asdict(company))
+                    logger.info("Результат сохранён в историю")
+                else:
+                    logger.warning(
+                        f"По ИНН {raw} получены пустые данные. "
+                        f"Проверьте файл {LAST_COMPANY_RESPONSE}."
+                    )
+                    print(f"Компания с ИНН {raw} не найдена или API вернул пустой ответ.")
             else:
-                print(f"Компания с ИНН {inn} не найдена или произошла ошибка.")
+                print(f"Компания с ИНН {raw} не найдена или произошла ошибка.")
 
     def search_mode(self):
         while True:
@@ -571,7 +736,10 @@ class CheckoChecker:
             print(f"\nНайдено компаний: {len(results)}")
             for i, result in enumerate(results[:10], 1):
                 if isinstance(result, dict):
-                    print(f"{i}. {result.get('name', 'N/A')} (ИНН: {result.get('inn', 'N/A')})")
+                    # Поддержка и русских, и латинских ключей
+                    name = result.get('НаимПолн') or result.get('НаимСокр') or result.get('name') or 'N/A'
+                    inn_val = result.get('ИНН') or result.get('inn') or 'N/A'
+                    print(f"{i}. {name} (ИНН: {inn_val})")
                 else:
                     print(f"{i}. {result}")
             choice = input("\nВведите номер для подробной информации или 'q' для выхода: ").strip()
@@ -580,10 +748,10 @@ class CheckoChecker:
             try:
                 idx = int(choice) - 1
                 if 0 <= idx < len(results) and isinstance(results[idx], dict):
-                    inn = results[idx].get('inn')
-                    if inn:
-                        company = self.api.get_company(str(inn))
-                        if company:
+                    inn_val = results[idx].get('ИНН') or results[idx].get('inn')
+                    if inn_val:
+                        company = self.api.get_company(str(inn_val))
+                        if company and (company.inn or company.name):
                             self.print_company_info(company)
                             self.history.add_record(asdict(company))
             except ValueError:
@@ -607,7 +775,7 @@ class CheckoChecker:
                     out.write(f"ИНН {inn}: Некорректный формат\n\n")
                     continue
                 company = self.api.get_company(inn)
-                if company:
+                if company and (company.inn or company.name):
                     out.write(
                         f"ИНН: {company.inn}\nНазвание: {company.name}\nОГРН: {company.ogrn}\n"
                         f"Статус: {company.status}\nДиректор: {company.director}\n"
@@ -632,6 +800,23 @@ class CheckoChecker:
         if len(history) > 20:
             print(f"... и ещё {len(history) - 20} записей")
 
+    def show_raw_response(self):
+        """Пункт меню: показать последний сырой ответ API"""
+        for path, label in [
+            (LAST_COMPANY_RESPONSE, "Компания"),
+            (LAST_SEARCH_RESPONSE, "Поиск")
+        ]:
+            p = Path(path)
+            if p.exists():
+                print(f"\n--- Последний ответ ({label}) — {p} ---")
+                try:
+                    with open(p, 'r', encoding='utf-8') as f:
+                        print(f.read()[:5000])
+                except Exception as e:
+                    print(f"Ошибка чтения: {e}")
+            else:
+                print(f"\nФайл {p} отсутствует (ещё не выполняли запросов типа «{label}»).")
+
     def export_data(self):
         history = self.history.get_all()
         if not history:
@@ -650,8 +835,9 @@ class CheckoChecker:
 
     def run(self):
         print("\n" + "=" * 80)
-        print("CHECKO.RU API CHECKER v2.1")
+        print("CHECKO.RU API CHECKER v2.2")
         print("=" * 80)
+        print("Совет: ИНН (10 цифр) можно вводить прямо в главном меню.")
         self.cache.clear_old(days=7)
         while True:
             print("\nВыберите режим работы:")
@@ -660,24 +846,33 @@ class CheckoChecker:
             print("3. Массовая проверка из файла")
             print("4. История проверок")
             print("5. Экспорт данных (CSV/Excel)")
-            print("6. Выход")
-            choice = input("\nВаш выбор (1-6): ").strip()
+            print("6. Показать последний сырой ответ API (JSON)")
+            print("7. Выход")
+            raw = input("\nВаш выбор (1-7) или ИНН: ").strip()
+
+            # Если пользователь ввёл 10-значное число — сразу проверка по ИНН
+            if raw.isdigit() and len(raw) == 10:
+                self.single_check(inn=raw)
+                continue
+
             try:
-                if choice == '1':
+                if raw == '1':
                     self.single_check()
-                elif choice == '2':
+                elif raw == '2':
                     self.search_mode()
-                elif choice == '3':
+                elif raw == '3':
                     self.batch_check()
-                elif choice == '4':
+                elif raw == '4':
                     self.show_history()
-                elif choice == '5':
+                elif raw == '5':
                     self.export_data()
-                elif choice == '6':
+                elif raw == '6':
+                    self.show_raw_response()
+                elif raw == '7':
                     print("До свидания!")
                     break
                 else:
-                    print("Некорректный выбор. Введите 1-6.")
+                    print("Некорректный выбор. Введите 1-7 или ИНН (10 цифр).")
             except KeyboardInterrupt:
                 print("\n\nПрервано пользователем. До свидания!")
                 break
